@@ -1,6 +1,6 @@
 """On-demand FlareSolverr runner used by the VixSrc extractor.
 
-The process is deliberately not started with EasyProxy.  It is spawned only
+The process is deliberately not started with EasyProxy. It is spawned only
 when a Cloudflare challenge is detected and is terminated after the API call
 has returned the solved page/cookies.
 """
@@ -61,7 +61,7 @@ def cookie_header_to_list(cookie_header: str | None) -> list[dict]:
 def proxy_payload(proxy_url: str) -> dict:
     """Return FlareSolverr's proxy object without leaking credentials in URL logs."""
     parsed = urlsplit(proxy_url)
-    payload = {"url": proxy_url}
+    payload = {"url": proxy_url.rstrip("/")}
     if parsed.username and parsed.password and parsed.hostname and parsed.port:
         payload["url"] = f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
         payload["username"] = parsed.username
@@ -75,7 +75,7 @@ class FlareSolverrManager:
         self._process: asyncio.subprocess.Process | None = None
         self._owns_process = False
         self._session: aiohttp.ClientSession | None = None
-        self._process_output: deque[str] = deque(maxlen=80)
+        self._process_output: deque[str] = deque(maxlen=120)
         self._output_task: asyncio.Task | None = None
 
     @property
@@ -89,6 +89,13 @@ class FlareSolverrManager:
             return max(minimum, int(os.getenv(name, str(default))))
         except (TypeError, ValueError):
             return default
+
+    @staticmethod
+    def _bool_env(name: str, default: bool = False) -> bool:
+        value = os.getenv(name)
+        if value is None:
+            return default
+        return value.strip().lower() in {"1", "true", "yes", "on"}
 
     def _command(self) -> list[str] | None:
         configured = os.getenv("FLARESOLVERR_COMMAND", "").strip()
@@ -105,15 +112,12 @@ class FlareSolverrManager:
 
     async def _api_available(self) -> bool:
         try:
-            # Health checks must not install their 2s timeout on the session
-            # used later for the actual browser-solving request.
             timeout = aiohttp.ClientTimeout(total=2)
             async with aiohttp.ClientSession(
                 timeout=timeout,
                 headers={"Content-Type": "application/json"},
             ) as session:
                 async with session.get(self.api_url, allow_redirects=False) as response:
-                    # GET /v1 commonly returns 405; that still proves the API is up.
                     return response.status < 500
         except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
             return False
@@ -142,7 +146,7 @@ class FlareSolverrManager:
     def _process_diagnostic(self) -> str:
         if not self._process_output:
             return ""
-        return " | ".join(self._process_output)[-4000:]
+        return " | ".join(self._process_output)[-6000:]
 
     async def _start(self) -> None:
         if self._process is not None and self._process.returncode is None:
@@ -158,21 +162,20 @@ class FlareSolverrManager:
         parsed_api = urlparse(self.api_url)
         api_host = parsed_api.hostname or "127.0.0.1"
         api_port = parsed_api.port or 8191
+        disable_media = self._bool_env("FLARESOLVERR_DISABLE_MEDIA", False)
         env = os.environ.copy()
         env.update(
             {
                 "HOST": "127.0.0.1",
                 "PORT": str(api_port),
                 "HEADLESS": "true",
-                "LOG_LEVEL": os.getenv("FLARESOLVERR_LOG_LEVEL", "error"),
+                "LOG_LEVEL": os.getenv("FLARESOLVERR_LOG_LEVEL", "info"),
                 "LOG_HTML": "false",
-                "DISABLE_MEDIA": "true",
+                "DISABLE_MEDIA": "true" if disable_media else "false",
                 "PROMETHEUS_ENABLED": "false",
             }
         )
 
-        # An explicitly configured API may already be managed outside this
-        # process.  The default local API is spawned below when needed.
         if api_host not in {"127.0.0.1", "localhost", "::1"}:
             if await self._api_available():
                 return
@@ -197,7 +200,7 @@ class FlareSolverrManager:
             raise FlareSolverrError(f"Avvio FlareSolverr fallito: {exc}") from exc
 
         deadline = asyncio.get_running_loop().time() + self._int_env(
-            "FLARESOLVERR_START_TIMEOUT", 30
+            "FLARESOLVERR_START_TIMEOUT", 90
         )
         while asyncio.get_running_loop().time() < deadline:
             if self._process.returncode is not None:
@@ -212,7 +215,9 @@ class FlareSolverrManager:
                 return
             await asyncio.sleep(0.25)
 
-        raise FlareSolverrError("Timeout avvio API FlareSolverr")
+        diagnostic = self._process_diagnostic()
+        suffix = f": {diagnostic}" if diagnostic else ""
+        raise FlareSolverrError(f"Timeout avvio API FlareSolverr{suffix}")
 
     async def _stop(self) -> None:
         process = self._process
@@ -244,8 +249,6 @@ class FlareSolverrManager:
 
         await self._finish_process_output()
 
-        # FlareSolverr can leave Chromium outside its process group.  Only
-        # target its temporary browser profiles, never a user's normal browser.
         browser_processes = []
         for candidate in psutil.process_iter(["name", "cmdline"]):
             try:
@@ -267,13 +270,17 @@ class FlareSolverrManager:
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
         if browser_processes:
-            _, alive = psutil.wait_procs(browser_processes, timeout=2)
-            for browser_process in alive:
-                try:
-                    browser_process.kill()
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
-            psutil.wait_procs(alive, timeout=2)
+            try:
+                _, alive = psutil.wait_procs(browser_processes, timeout=2)
+                for browser_process in alive:
+                    try:
+                        browser_process.kill()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+                if alive:
+                    psutil.wait_procs(alive, timeout=2)
+            except (OSError, ValueError, psutil.Error):
+                logger.debug("Browser cleanup race ignored", exc_info=True)
 
         if process and owns_process:
             logger.info("FlareSolverr terminato dopo il recupero dei cookie")
@@ -294,26 +301,38 @@ class FlareSolverrManager:
         async with self._lock:
             try:
                 await self._start()
+                request_timeout = self._int_env("FLARESOLVERR_REQUEST_TIMEOUT", 180)
+                max_timeout = self._int_env("FLARESOLVERR_MAX_TIMEOUT_MS", 120000)
+                # Give the local HTTP call a little more time than the browser solver itself.
+                request_timeout = max(request_timeout, int(max_timeout / 1000) + 20)
                 if self._session is None or self._session.closed:
                     self._session = aiohttp.ClientSession(
-                        timeout=aiohttp.ClientTimeout(
-                            total=self._int_env("FLARESOLVERR_REQUEST_TIMEOUT", 90)
-                        ),
+                        timeout=aiohttp.ClientTimeout(total=request_timeout),
                         headers={"Content-Type": "application/json"},
                     )
 
                 payload = {
                     "cmd": "request.get",
                     "url": url,
-                    "maxTimeout": self._int_env("FLARESOLVERR_MAX_TIMEOUT_MS", 60000),
+                    "maxTimeout": max_timeout,
                     "returnOnlyCookies": False,
-                    "disableMedia": True,
+                    # Keep CSS/fonts/images enabled by default. Turnstile/managed
+                    # challenges can depend on a fully rendered page.
+                    "disableMedia": self._bool_env("FLARESOLVERR_DISABLE_MEDIA", False),
                 }
                 cookies = cookie_header_to_list(cookie_header)
                 if cookies:
                     payload["cookies"] = cookies
                 if proxy_url:
                     payload["proxy"] = proxy_payload(proxy_url)
+
+                logger.info(
+                    "FlareSolverr request: target=%s proxy=%s maxTimeout=%sms disableMedia=%s",
+                    url,
+                    proxy_payload(proxy_url).get("url") if proxy_url else "direct",
+                    max_timeout,
+                    payload["disableMedia"],
+                )
 
                 async with self._session.post(self.api_url, json=payload) as response:
                     if response.status >= 400:
@@ -322,13 +341,19 @@ class FlareSolverrManager:
                             message = str(error.get("message") or "risposta senza dettagli")[:1500]
                         except (ValueError, AttributeError):
                             message = "risposta non JSON"
-                        raise FlareSolverrError(f"FlareSolverr HTTP {response.status}: {message}")
+                        diagnostic = self._process_diagnostic()
+                        suffix = f" | solver: {diagnostic}" if diagnostic else ""
+                        raise FlareSolverrError(
+                            f"FlareSolverr HTTP {response.status}: {message}{suffix}"
+                        )
                     response.raise_for_status()
                     result = await response.json(content_type=None)
 
                 if result.get("status") != "ok":
                     message = result.get("message") or "risposta non valida"
-                    raise FlareSolverrError(f"FlareSolverr: {message}")
+                    diagnostic = self._process_diagnostic()
+                    suffix = f" | solver: {diagnostic}" if diagnostic else ""
+                    raise FlareSolverrError(f"FlareSolverr: {message}{suffix}")
 
                 raw_solution = result.get("solution") or {}
                 raw_cookies = raw_solution.get("cookies") or []
@@ -344,9 +369,12 @@ class FlareSolverrManager:
                 return solution
             except (aiohttp.ClientError, asyncio.TimeoutError, OSError, json.JSONDecodeError) as exc:
                 detail = str(exc) or type(exc).__name__
-                raise FlareSolverrError(f"Richiesta FlareSolverr fallita [{detail}]") from exc
+                diagnostic = self._process_diagnostic()
+                suffix = f" | solver: {diagnostic}" if diagnostic else ""
+                raise FlareSolverrError(
+                    f"Richiesta FlareSolverr fallita [{detail}]{suffix}"
+                ) from exc
             finally:
-                # Deliberately stop immediately after the solution is copied.
                 await self._stop()
 
     async def shutdown(self) -> None:
