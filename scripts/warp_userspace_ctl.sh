@@ -1,6 +1,114 @@
 #!/bin/sh
 set -eu
 
+# When the app calls this controller without WARP_INSTANCE, operate as a
+# dual-WARP manager. Entrypoint calls always set WARP_INSTANCE explicitly and
+# therefore still control one backend at a time.
+if [ -z "${WARP_INSTANCE+x}" ]; then
+    ACTIVE_FILE="${WARP_ACTIVE_FILE:-/tmp/easyproxy-warp-active}"
+
+    run_instance() {
+        inst="$1"
+        action="$2"
+        case "$inst" in
+            primary)
+                WARP_INSTANCE=primary \
+                WARP_RUNTIME_DIR=/tmp/easyproxy-warp-primary \
+                WARP_CONFIG_FILE=/data/warp-primary.conf \
+                WARP_LOG_FILE=/var/log/wireproxy-primary.log \
+                WARP_SOCKS_ADDR=127.0.0.1:1081 \
+                "$0" "$action"
+                ;;
+            secondary)
+                WARP_INSTANCE=secondary \
+                WARP_RUNTIME_DIR=/tmp/easyproxy-warp-secondary \
+                WARP_CONFIG_FILE=/data/warp-secondary.conf \
+                WARP_LOG_FILE=/var/log/wireproxy-secondary.log \
+                WARP_SOCKS_ADDR=127.0.0.1:1082 \
+                "$0" "$action"
+                ;;
+            *) return 2 ;;
+        esac
+    }
+
+    get_active() {
+        active=""
+        [ -r "$ACTIVE_FILE" ] && active=$(tr -d '[:space:]' < "$ACTIVE_FILE" || true)
+        case "$active" in
+            primary|secondary) printf '%s\n' "$active" ;;
+            *) printf '%s\n' primary ;;
+        esac
+    }
+
+    set_active() {
+        printf '%s\n' "$1" > "$ACTIVE_FILE"
+    }
+
+    manager_restart() {
+        active=$(get_active)
+        if [ "$active" = primary ]; then other=secondary; else other=primary; fi
+
+        # Prefer a hitless failover: verify the standby first, switch the relay
+        # for NEW TCP connections, then recycle the previously-active backend.
+        if run_instance "$other" probe >/dev/null 2>&1; then
+            echo "Dual-WARP: failover ${active} -> ${other} before restart."
+            set_active "$other"
+            sleep 1
+            run_instance "$active" restart
+            if run_instance "$active" probe >/dev/null 2>&1; then
+                echo "Dual-WARP: ${active} recovered; keeping ${other} active for stability."
+            else
+                echo "Dual-WARP: ${active} restart completed but health probe still fails; ${other} remains active." >&2
+            fi
+            return 0
+        fi
+
+        # No healthy standby is available. Recycle the active backend as a
+        # last resort, accepting a short interruption.
+        echo "Dual-WARP: standby ${other} unhealthy; restarting active ${active}." >&2
+        run_instance "$active" restart
+        run_instance "$active" probe >/dev/null
+    }
+
+    case "${1:-status}" in
+        restart)
+            manager_restart
+            ;;
+        probe)
+            run_instance "$(get_active)" probe
+            ;;
+        status)
+            active=$(get_active)
+            if run_instance "$active" status >/dev/null 2>&1; then
+                echo "dual-warp active=${active}"
+                exit 0
+            fi
+            exit 1
+            ;;
+        stop)
+            run_instance primary stop || true
+            run_instance secondary stop || true
+            ;;
+        start)
+            run_instance primary start
+            run_instance secondary start
+            if run_instance primary probe >/dev/null 2>&1; then
+                set_active primary
+            elif run_instance secondary probe >/dev/null 2>&1; then
+                set_active secondary
+            else
+                echo "Dual-WARP: no healthy backend after start." >&2
+                exit 1
+            fi
+            ;;
+        *)
+            echo "Usage: $0 {start|stop|restart|probe|status}" >&2
+            exit 2
+            ;;
+    esac
+    exit $?
+fi
+
 INSTANCE="${WARP_INSTANCE:-primary}"
 BASE_DIR="${WARP_RUNTIME_DIR:-/tmp/easyproxy-warp-${INSTANCE}}"
 PID_FILE="${WARP_PID_FILE:-${BASE_DIR}/wireproxy.pid}"
@@ -27,14 +135,10 @@ read_pid() {
 write_wireproxy_config() {
     mkdir -p "$BASE_DIR"
 
-    # Keep WARP itself IPv4-only. Remove any IPv6 fields even when a manually
-    # supplied/generated profile contains them.
     sed -E '/^(Address|AllowedIPs|DNS) = / {
         s/, *[^, ]*:[^, ]*//g
     }' "$CONFIG_FILE" > "$WIREPROXY_CONFIG"
 
-    # Resolve the WireGuard endpoint to an IPv4 address as well. This keeps
-    # the control-plane handshake from selecting an IPv6 endpoint implicitly.
     endpoint=$(sed -n 's/^Endpoint = //p' "$WIREPROXY_CONFIG" | head -n 1)
     endpoint_host=${endpoint%:*}
     endpoint_port=${endpoint##*:}
@@ -101,7 +205,7 @@ probe_warp() {
         return 1
     fi
 
-    trace=$(curl --socks5 "$SOCKS_ADDR" -fsS \
+    trace=$(curl --socks5-hostname "$SOCKS_ADDR" -fsS \
         --connect-timeout 3 --max-time 8 "$TRACE_URL" 2>&1) || {
         echo "WARP ${INSTANCE} probe: SOCKS traffic failed: $trace" >&2
         return 1
