@@ -127,6 +127,7 @@ def create_app():
     app.router.add_get('/admin/login', proxy.handle_admin_login)
     app.router.add_post('/api/admin/login', proxy.handle_admin_api_login)
     app.router.add_get('/admin/logout', proxy.handle_admin_logout)
+    app.router.add_post('/api/admin/diagnostics', proxy.handle_admin_diagnostics)
     app.router.add_get('/api/admin/config', proxy.handle_admin_api_get)
     app.router.add_post('/api/admin/config', proxy.handle_admin_api_update)
     app.router.add_get('/api/admin/config/download', proxy.handle_admin_api_download)
