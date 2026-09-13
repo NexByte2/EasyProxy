@@ -22,10 +22,55 @@ from routes.recordings import setup_recording_routes
 
 logger = logging.getLogger(__name__)
 
+DUAL_WARP_ACTIVE_FILE = "/tmp/easyproxy-warp-active"
+
+
 def _read_file(path):
     """Helper for async file reading via run_in_executor."""
     with open(path, 'r', encoding='utf-8') as f:
         return f.read()
+
+
+async def _tcp_up(host: str, port: int, timeout: float = 1.0) -> bool:
+    """Cheap listener health check used only for the UI status display."""
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port), timeout=timeout
+        )
+        writer.close()
+        await writer.wait_closed()
+        return True
+    except (OSError, asyncio.TimeoutError):
+        return False
+
+
+async def _dual_warp_state() -> dict:
+    """Return health of the two WARP backends and the stable relay."""
+    primary, secondary, relay = await asyncio.gather(
+        _tcp_up("127.0.0.1", 1081),
+        _tcp_up("127.0.0.1", 1082),
+        _tcp_up("127.0.0.1", 1080),
+    )
+    try:
+        active = _read_file(DUAL_WARP_ACTIVE_FILE).strip().lower()
+    except OSError:
+        active = ""
+    if active not in {"primary", "secondary"}:
+        active = "unknown"
+    active_healthy = (
+        primary if active == "primary"
+        else secondary if active == "secondary"
+        else False
+    )
+    return {
+        "primary": primary,
+        "secondary": secondary,
+        "relay": relay,
+        "active": active,
+        "active_healthy": active_healthy,
+        "failover_ready": relay and primary and secondary,
+    }
+
 
 # --- Logica di Avvio ---
 def create_app():
@@ -47,9 +92,38 @@ def create_app():
         recordings_dir=RECORDINGS_DIR
     )
     app['recording_manager'] = recording_manager
+
+    async def handle_root_with_dual_warp(request):
+        """Keep the existing homepage but make the real dual-WARP state visible."""
+        response = await proxy.handle_root(request)
+        if response.status != 200 or not response.text:
+            return response
+        try:
+            state = await _dual_warp_state()
+            p = "✓" if state["primary"] else "✕"
+            s = "✓" if state["secondary"] else "✕"
+            r = "✓" if state["relay"] else "✕"
+            active = state["active"].upper()
+            old = f'<div class="warp-chip">WARP: {proxy.warp_status}</div>'
+            new = (
+                '<div class="warp-chip" title="Dual WARP health">'
+                f'DUAL WARP · P {p} · S {s} · RELAY {r} · ACTIVE {active}'
+                '</div>'
+            )
+            response.text = response.text.replace(old, new)
+        except Exception as exc:
+            logger.debug("Unable to enrich homepage with dual-WARP state: %s", exc)
+        return response
+
+    async def handle_dual_warp_status(request):
+        """Small JSON endpoint used to inspect dual-WARP availability."""
+        state = await _dual_warp_state()
+        state["status"] = "ok" if state["relay"] and state["active_healthy"] else "degraded"
+        return web.json_response(state)
     
     # Registra le route
-    app.router.add_get('/', proxy.handle_root)
+    app.router.add_get('/', handle_root_with_dual_warp)
+    app.router.add_get('/api/warp/dual-status', handle_dual_warp_status)
     app.router.add_get('/docs', proxy.handle_docs)
     app.router.add_get('/redoc', proxy.handle_redoc)
     app.router.add_get('/openapi.json', proxy.handle_openapi)
