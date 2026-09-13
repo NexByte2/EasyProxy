@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 # Docker keeps its persistent volume at /data.  Native Windows runs should
 # keep the same layout inside the EasyProxy checkout instead of writing to
-# the drive root (C:\data).
+# the drive root (C:\\data).
 _PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 _DEFAULT_CONFIG_DIR = (
     os.path.join(_PROJECT_DIR, "data") if os.name == "nt" else "/data"
@@ -18,28 +18,30 @@ _CONFIG_DIR = os.environ.get("CONFIG_DIR") or _DEFAULT_CONFIG_DIR
 _CONFIG_FILE = os.path.join(_CONFIG_DIR, "config.json")
 DEFAULT_RECORDINGS_DIR = os.path.join(_CONFIG_DIR, "recordings")
 
+# These values were previously injected into every saved configuration.
+# Keep them only for one-time migration of an untouched legacy config.
+_LEGACY_WARP_EXCLUDE_DOMAINS = [
+    "strem.fun", "*.strem.fun", "torrentio.strem.fun",
+    "real-debrid.com", "*.real-debrid.com", "realdebrid.com",
+    "*.realdebrid.com", "api.real-debrid.com",
+    "premiumize.me", "*.premiumize.me", "www.premiumize.me",
+    "alldebrid.com", "*.alldebrid.com", "api.alldebrid.com",
+    "debrid-link.com", "*.debrid-link.com", "debridlink.com",
+    "*.debridlink.com", "api.debrid-link.com",
+    "torbox.app", "*.torbox.app", "api.torbox.app",
+    "offcloud.com", "*.offcloud.com", "api.offcloud.com",
+    "put.io", "*.put.io", "api.put.io",
+]
+
 DEFAULT_CONFIG = {
     "enable_warp": False,
     "warp_license_key": "",
-    "warp_exclude_domains": [
-        "strem.fun", "*.strem.fun", "torrentio.strem.fun",
-        "real-debrid.com", "*.real-debrid.com", "realdebrid.com",
-        "*.realdebrid.com", "api.real-debrid.com",
-        "premiumize.me", "*.premiumize.me", "www.premiumize.me",
-        "alldebrid.com", "*.alldebrid.com", "api.alldebrid.com",
-        "debrid-link.com", "*.debrid-link.com", "debridlink.com",
-        "*.debridlink.com", "api.debrid-link.com",
-        "torbox.app", "*.torbox.app", "api.torbox.app",
-        "offcloud.com", "*.offcloud.com", "api.offcloud.com",
-        "put.io", "*.put.io", "api.put.io",
-    ],
+    "warp_exclude_domains": [],
     "warp_exclude_domains_custom": [],
     "global_proxies": [],
     "transport_routes": [],
     "extractor_proxies": {},
-    # Cinejoy's gateway rejects Cloudflare WARP egress (HTTP 403). Keep its
-    # resolver direct unless the user explicitly supplies another proxy route.
-    "warp_off_extractors": ["cinejoy"],
+    "warp_off_extractors": [],
     "proxy_off_extractors": [],
     "proxy_exclude_domains": [],
     "dvr_enabled": False,
@@ -55,32 +57,6 @@ _lock = threading.RLock()
 _config_data = None
 
 
-def _load():
-    global _config_data
-    os.makedirs(_CONFIG_DIR, exist_ok=True)
-    if os.path.exists(_CONFIG_FILE):
-        try:
-            with open(_CONFIG_FILE, "r") as f:
-                data = json.load(f)
-            merged = deepcopy(DEFAULT_CONFIG)
-            merged.update(data)
-            # ponytail: merge default list keys to ensure mandatory exclusions are always present
-            for list_key in ["warp_exclude_domains", "warp_off_extractors", "proxy_off_extractors"]:
-                if list_key in data and list_key in DEFAULT_CONFIG:
-                    combined = list(DEFAULT_CONFIG[list_key])
-                    for item in data[list_key]:
-                        if item not in combined:
-                            combined.append(item)
-                    merged[list_key] = combined
-            _config_data = merged
-            logger.debug("Loaded config from %s", _CONFIG_FILE)
-            return
-        except Exception as e:
-            logger.warning("Failed to load config.json: %s", e)
-    _config_data = deepcopy(DEFAULT_CONFIG)
-    _save()
-
-
 def _atomic_write(path, payload):
     os.makedirs(_CONFIG_DIR, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=".config-", dir=_CONFIG_DIR)
@@ -93,6 +69,41 @@ def _atomic_write(path, payload):
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+
+
+def _load():
+    global _config_data
+    os.makedirs(_CONFIG_DIR, exist_ok=True)
+    if os.path.exists(_CONFIG_FILE):
+        try:
+            with open(_CONFIG_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            migrated = False
+            # Only remove the exact legacy defaults that EasyProxy itself used
+            # to force into every configuration. Different/custom values are
+            # left untouched.
+            if data.get("warp_exclude_domains") == _LEGACY_WARP_EXCLUDE_DOMAINS:
+                data["warp_exclude_domains"] = []
+                migrated = True
+            if data.get("warp_off_extractors") == ["cinejoy"]:
+                data["warp_off_extractors"] = []
+                migrated = True
+
+            merged = deepcopy(DEFAULT_CONFIG)
+            merged.update(data)
+            _config_data = merged
+
+            if migrated:
+                _atomic_write(_CONFIG_FILE, json.dumps(_config_data, indent=2))
+                logger.info("Migrated legacy forced WARP exclusions from %s", _CONFIG_FILE)
+
+            logger.debug("Loaded config from %s", _CONFIG_FILE)
+            return
+        except Exception as e:
+            logger.warning("Failed to load config.json: %s", e)
+    _config_data = deepcopy(DEFAULT_CONFIG)
+    _save()
 
 
 def _save():
