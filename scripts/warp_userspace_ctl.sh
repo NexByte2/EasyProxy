@@ -1,12 +1,14 @@
 #!/bin/sh
 set -eu
 
-PID_FILE="/tmp/easyproxy-warp/wireproxy.pid"
-CONFIG_FILE="${WARP_CONFIG_FILE:-/etc/wireguard/wg0.conf}"
-WIREPROXY_CONFIG="/tmp/easyproxy-warp/wireproxy.conf"
-LOG_FILE="/var/log/wireproxy.log"
+INSTANCE="${WARP_INSTANCE:-primary}"
+BASE_DIR="${WARP_RUNTIME_DIR:-/tmp/easyproxy-warp-${INSTANCE}}"
+PID_FILE="${WARP_PID_FILE:-${BASE_DIR}/wireproxy.pid}"
+CONFIG_FILE="${WARP_CONFIG_FILE:-/data/warp-primary.conf}"
+WIREPROXY_CONFIG="${WARP_WIREPROXY_CONFIG:-${BASE_DIR}/wireproxy.conf}"
+LOG_FILE="${WARP_LOG_FILE:-/var/log/wireproxy-${INSTANCE}.log}"
 WIREPROXY_BIN="/usr/local/bin/wireproxy"
-SOCKS_ADDR="127.0.0.1:1080"
+SOCKS_ADDR="${WARP_SOCKS_ADDR:-127.0.0.1:1081}"
 TRACE_URL="https://www.cloudflare.com/cdn-cgi/trace"
 
 pid_is_wireproxy() {
@@ -23,6 +25,8 @@ read_pid() {
 }
 
 write_wireproxy_config() {
+    mkdir -p "$BASE_DIR"
+
     # Keep WARP itself IPv4-only. Remove any IPv6 fields even when a manually
     # supplied/generated profile contains them.
     sed -E '/^(Address|AllowedIPs|DNS) = / {
@@ -45,27 +49,26 @@ write_wireproxy_config() {
 
 start_wireproxy() {
     if pid=$(read_pid) && pid_is_wireproxy "$pid"; then
-        echo "wireproxy already running (pid ${pid})."
+        echo "wireproxy ${INSTANCE} already running (pid ${pid}, socks ${SOCKS_ADDR})."
         return 0
     fi
 
     rm -f "$PID_FILE"
     [ -x "$WIREPROXY_BIN" ] || { echo "wireproxy binary not found." >&2; return 1; }
-    [ -f "$CONFIG_FILE" ] || { echo "WireGuard config not found." >&2; return 1; }
-    mkdir -p "$(dirname "$WIREPROXY_CONFIG")"
+    [ -f "$CONFIG_FILE" ] || { echo "WireGuard config not found: ${CONFIG_FILE}." >&2; return 1; }
+    mkdir -p "$BASE_DIR"
     write_wireproxy_config
 
     if ! "$WIREPROXY_BIN" -n -c "$WIREPROXY_CONFIG" >/dev/null 2>&1; then
-        echo "wireproxy config validation failed." >&2
+        echo "wireproxy ${INSTANCE} config validation failed." >&2
         rm -f "$WIREPROXY_CONFIG"
         return 1
     fi
 
-    "$WIREPROXY_BIN" -c "$WIREPROXY_CONFIG" \
-        >>"$LOG_FILE" 2>&1 &
+    "$WIREPROXY_BIN" -c "$WIREPROXY_CONFIG" >>"$LOG_FILE" 2>&1 &
     pid=$!
     printf '%s\n' "$pid" > "$PID_FILE"
-    echo "Started wireproxy (pid ${pid})."
+    echo "Started wireproxy ${INSTANCE} (pid ${pid}, socks ${SOCKS_ADDR})."
 }
 
 stop_wireproxy() {
@@ -84,8 +87,8 @@ stop_wireproxy() {
     done
 
     if pid_is_wireproxy "$pid"; then
-        echo "wireproxy did not stop within 10 seconds." >&2
-        return 1
+        kill -KILL "$pid" 2>/dev/null || true
+        sleep 1
     fi
     rm -f "$PID_FILE"
     rm -f "$WIREPROXY_CONFIG"
@@ -94,25 +97,25 @@ stop_wireproxy() {
 probe_warp() {
     pid=$(read_pid 2>/dev/null || true)
     if [ -z "$pid" ] || ! pid_is_wireproxy "$pid"; then
-        echo "WARP probe: wireproxy process is down." >&2
+        echo "WARP ${INSTANCE} probe: wireproxy process is down." >&2
         return 1
     fi
 
     trace=$(curl --socks5 "$SOCKS_ADDR" -fsS \
         --connect-timeout 3 --max-time 8 "$TRACE_URL" 2>&1) || {
-        echo "WARP probe: SOCKS traffic failed: $trace" >&2
+        echo "WARP ${INSTANCE} probe: SOCKS traffic failed: $trace" >&2
         return 1
     }
 
-    printf '%s\n' "$trace"
     printf '%s\n' "$trace" | grep -Eq '^warp=(on|plus)$' || {
-        echo "WARP probe: Cloudflare did not report warp=on/plus." >&2
+        echo "WARP ${INSTANCE} probe: Cloudflare did not report warp=on/plus." >&2
         return 1
     }
     printf '%s\n' "$trace" | grep -Eq '^ip=[0-9.]+$' || {
-        echo "WARP probe: egress is not IPv4-only." >&2
+        echo "WARP ${INSTANCE} probe: egress is not IPv4-only." >&2
         return 1
     }
+    printf '%s\n' "$trace"
 }
 
 case "${1:-status}" in
@@ -132,13 +135,13 @@ case "${1:-status}" in
     status)
         pid=$(read_pid 2>/dev/null || true)
         if [ -n "$pid" ] && pid_is_wireproxy "$pid"; then
-            echo "wireproxy running (pid ${pid})."
+            echo "wireproxy ${INSTANCE} running (pid ${pid}, socks ${SOCKS_ADDR})."
             exit 0
         fi
         exit 1
         ;;
     *)
-        echo "Usage: $0 {start|stop|restart|status}" >&2
+        echo "Usage: $0 {start|stop|restart|probe|status}" >&2
         exit 2
         ;;
 esac
