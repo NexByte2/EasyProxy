@@ -376,6 +376,16 @@
             padding: 2px 8px; border-radius: 4px;
         }
         .ll-item .ll-remove:hover { background: rgba(239,68,68,0.15); }
+        .diagnostic-row { padding: 12px 0; border-bottom: 1px solid var(--border-primary); overflow-wrap: anywhere; }
+        .diagnostic-row p { margin: 5px 0; color: var(--text-secondary); }
+        .error-guide { padding-left: 20px; line-height: 1.6; color: var(--text-secondary); }
+        .error-guide li { margin: 8px 0; }
+        @media (max-width: 600px) {
+            .row { flex-wrap: wrap; }
+            .row input { min-width: 0; max-width: 100%; }
+            .add-form .btn { width: 100%; min-height: 44px; white-space: normal; }
+            .card h2 { flex-wrap: wrap; }
+        }
     </style>
 </head>
 <body>
@@ -386,24 +396,48 @@
     <div class="page-header">
         <div class="hero-badge">
             <div class="hero-badge-dot"></div>
-            <span>Administration Panel</span>
+            <span>Pannello amministrativo</span>
         </div>
-        <h1>Settings</h1>
-        <p class="subtitle">Changes apply immediately &mdash; no restart required</p>
+        <h1>Impostazioni</h1>
+        <p class="subtitle">Le modifiche vengono applicate al salvataggio</p>
         <div class="version-chip">v{{APP_VERSION}}</div>
         <div style="margin-top: 1rem; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;">
             <button class="btn btn-primary btn-sm" onclick="logout()">🚪 Logout</button>
-            <button class="btn btn-primary btn-sm" onclick="downloadConfig()">⬇ Download Config</button>
+            <button class="btn btn-primary btn-sm" onclick="downloadConfig()">⬇ Scarica backup</button>
+            <button class="btn btn-primary btn-sm" onclick="downloadConfig(true)">↶ Scarica versione precedente</button>
             <label class="btn btn-primary btn-sm" style="cursor:pointer">
-                ⬆ Upload Config
+                ⬆ Ripristina backup
                 <input type="file" id="upload-input" accept=".json" style="display:none" onchange="uploadConfig(event)">
             </label>
         </div>
     </div>
 
+    <p class="help-text" style="text-align:center">Il backup contiene le impostazioni e le eventuali credenziali proxy. Conservalo sul tuo dispositivo. Non include le variabili di Render, il profilo WARP o le registrazioni. La versione precedente conserva un solo salvataggio e dipende dalla persistenza del disco del server.</p>
+
     <div id="toast" class="toast"></div>
 
     <div class="grid-2">
+        <section class="card card-wide" aria-labelledby="diagnostics-title">
+            <h2 id="diagnostics-title">🩺 Diagnostica in italiano</h2>
+            <p class="help-text">Controlla EasyProxy e WARP senza cambiare impostazioni. Il test WARP usa una piccola richiesta di rete e può richiedere fino a 16 secondi. Nessun servizio IA o abbonamento aggiuntivo.</p>
+            <div class="add-form">
+                <button id="diagnostics-run" class="btn btn-primary" onclick="runDiagnostics()">Controlla adesso</button>
+                <button id="diagnostics-download" class="btn btn-primary" disabled onclick="downloadDiagnostics()">Scarica rapporto</button>
+            </div>
+            <div id="diagnostics-results" role="status" aria-live="polite"><p class="help-text">Il controllo non verifica i singoli link video e non misura la velocità.</p></div>
+            <details style="margin-top:16px">
+                <summary>Come leggere gli errori di riproduzione</summary>
+                <p class="help-text">Questa guida spiega i codici: non è una diagnosi del tuo stream.</p>
+                <ul class="error-guide">
+                    <li><strong>401:</strong> autenticazione mancante o rifiutata. Verifica quale servizio restituisce l'errore e le relative credenziali.</li>
+                    <li><strong>403:</strong> richiesta rifiutata dal server. Il codice da solo non dimostra un guasto WARP.</li>
+                    <li><strong>404:</strong> risorsa non trovata. Verifica che il link sia ancora valido.</li>
+                    <li><strong>429:</strong> troppe richieste. Attendi prima di riprovare.</li>
+                    <li><strong>500 / 502 / 503 / 504:</strong> errore del server o di un servizio intermedio. Controlla i log per individuarlo.</li>
+                    <li><strong>Timeout:</strong> la risposta non è arrivata in tempo. Può dipendere dal percorso di rete o dalla sorgente.</li>
+                </ul>
+            </details>
+        </section>
         <!-- System resources -->
         <div class="card card-wide">
             <h2><span class="icon">📊</span> System Resources</h2>
@@ -458,12 +492,12 @@
 
         <!-- WARP -->
         <div class="card">
-            <h2><span class="icon">🌐</span> Cloudflare WARP <span id="warp-status" class="status" style="margin:0;font-size:0.75rem">Checking...</span> <span id="warp-ip" style="font-size:0.7rem;color:var(--text-muted);font-weight:400"></span></h2>
+            <h2><span class="icon">🌐</span> Cloudflare WARP <span id="warp-status" class="status" style="margin:0;font-size:0.75rem">Da verificare</span> <span id="warp-ip" style="font-size:0.7rem;color:var(--text-muted);font-weight:400"></span></h2>
             <div class="row">
-                <label>Enabled</label>
+                <label>WARP attivo</label>
                 <div id="warp-toggle" class="toggle" onclick="toggleWarp()"></div>
                 <span id="warp-label" class="badge badge-off">OFF</span>
-                <button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="reconnectWarp()">🔄 New IP</button>
+                <button id="warp-reconnect" class="btn btn-primary btn-sm" style="margin-left:auto" onclick="reconnectWarp()">🔄 Riconnetti WARP</button>
             </div>
             <div class="row">
                 <label>License Key</label>
@@ -498,7 +532,7 @@
         <!-- WARP Off per Extractor -->
         <div class="card card-wide">
             <h2><span class="icon">🚫</span> WARP Off per Extractor</h2>
-            <p class="help-text">Toggle WARP off for specific extractors</p>
+            <p class="help-text">Ogni pulsante indica se quel servizio usa WARP oppure lo esclude. WARP deve essere attivo per essere utilizzato.</p>
             <div id="warp-off-list" style="display:flex;flex-wrap:wrap;gap:6px"></div>
         </div>
 
@@ -722,14 +756,14 @@ function setToggle(id, value) {
 async function loadConfig() {
     const params = new URLSearchParams(window.location.search);
     const pw = params.get('api_password');
-    const url = '/api/admin/config' + (pw ? '?api_password=' + pw : '');
+    const url = '/api/admin/config' + (pw ? '?api_password=' + encodeURIComponent(pw) : '');
     try {
         const resp = await fetch(url);
         if (!resp.ok) { toast('Failed to load config (check API password)', 'error'); return; }
         config = await resp.json();
         setToggle('warp-toggle', config.enable_warp);
         const ws = document.getElementById('warp-status');
-        ws.textContent = 'Status: ' + (config.warp_status || 'Unknown');
+        ws.textContent = warpStatusLabel(config.warp_status);
         ws.className = 'status ' + (config.warp_status === 'Connected' ? 'connected' : 'disconnected');
         document.getElementById('warp-ip').textContent = config.warp_ip ? '(' + config.warp_ip + ')' : '';
         document.getElementById('warp-license-key').value = config.warp_license_key || '';
@@ -824,7 +858,11 @@ function renderWarpOffToggles(available, warpOffList) {
         const isOff = warpOffList.includes(name);
         const btn = document.createElement('span');
         btn.className = 'warp-off-chip' + (isOff ? ' off' : '');
-        btn.textContent = name + (isOff ? ' 🚫' : ' ✅');
+        btn.textContent = name + (isOff ? ' · WARP escluso' : ' · WARP consentito');
+        btn.setAttribute('role', 'button');
+        btn.tabIndex = 0;
+        btn.setAttribute('aria-pressed', String(isOff));
+        btn.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); btn.click(); } };
         btn.onclick = async () => {
             let newList;
             if (warpOffList.includes(name)) {
@@ -832,7 +870,7 @@ function renderWarpOffToggles(available, warpOffList) {
             } else {
                 newList = [...warpOffList, name];
             }
-            await saveField('warp_off_extractors', newList);
+            if (!await saveField('warp_off_extractors', newList)) return;
             config.warp_off_extractors = newList;
             renderWarpOffToggles(available, newList);
         };
@@ -869,14 +907,19 @@ function humanizeKey(key) {
 }
 
 async function saveField(key, value) {
-    const params = new URLSearchParams(window.location.search);
-    const pw = params.get('api_password');
-    const resp = await fetch('/api/admin/config' + (pw ? '?api_password=' + pw : ''), {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({[key]: value})
-    });
-    if (resp.ok) { config[key] = value; toast('✓ Saved: ' + humanizeKey(key)); }
-    else { toast('✗ Failed: ' + humanizeKey(key), 'error'); }
+    try {
+        const resp = await fetch(adminUrl('/api/admin/config'), {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({[key]: value})
+        });
+        if (!resp.ok) throw new Error('Salvataggio non riuscito. Le modifiche non sono confermate.');
+        config[key] = value;
+        toast('✓ Salvato: ' + humanizeKey(key));
+        return true;
+    } catch (error) {
+        toast(error.message, 'error');
+        return false;
+    }
 }
 
 function toggleExtractorProxyMode() {
@@ -901,10 +944,10 @@ function toggleExtractorProxyMode() {
 async function reconnectWarp() {
     const params = new URLSearchParams(window.location.search);
     const pw = params.get('api_password');
-    const btn = document.querySelector('#warp-status + .row .btn-primary');
-    if (btn) { btn.textContent = '⏳ Reconnecting...'; btn.disabled = true; }
+    const btn = document.getElementById('warp-reconnect');
+    if (btn) { btn.textContent = 'Riconnessione…'; btn.disabled = true; }
     try {
-        const resp = await fetch('/api/admin/warp/reconnect' + (pw ? '?api_password=' + pw : ''), {
+        const resp = await fetch('/api/admin/warp/reconnect' + (pw ? '?api_password=' + encodeURIComponent(pw) : ''), {
             method: 'POST'
         });
         const data = await resp.json();
@@ -914,40 +957,105 @@ async function reconnectWarp() {
         } else {
             toast(data.message || 'Reconnect failed', 'error');
         }
-        if (btn) { btn.textContent = '🔄 New IP'; btn.disabled = false; }
+        if (btn) { btn.textContent = 'Riconnetti WARP'; btn.disabled = false; }
     } catch(e) {
         toast('Reconnect error: ' + e.message, 'error');
     }
-    if (btn) { btn.textContent = '🔄 Reconnect WARP (new IP)'; btn.disabled = false; }
+    if (btn) { btn.textContent = '🔄 Riconnetti WARP'; btn.disabled = false; }
 }
 
 function logout() {
     window.location.href = '/admin/logout';
 }
-function downloadConfig() {
-    const params = new URLSearchParams(window.location.search);
-    const pw = params.get('api_password');
-    const a = document.createElement('a');
-    a.href = '/api/admin/config/download' + (pw ? '?api_password=' + pw : '');
-    a.download = 'easyproxy_config.json';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+function adminUrl(path) {
+    const url = new URL(path, location.origin);
+    const password = new URLSearchParams(location.search).get('api_password');
+    if (password) url.searchParams.set('api_password', password);
+    return url;
+}
+function saveDownload(body, filename) {
+    const url = URL.createObjectURL(new Blob([body], {type: 'application/json'}));
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+async function downloadConfig(previous = false) {
+    try {
+        const url = adminUrl('/api/admin/config/download');
+        if (previous) url.searchParams.set('previous', '1');
+        const response = await fetch(url, {cache: 'no-store'});
+        if (!response.ok) {
+            if (response.status === 404) throw new Error('Nessuna versione precedente: sarà creata al prossimo salvataggio.');
+            throw new Error('Backup non scaricato. Verifica l’accesso al pannello.');
+        }
+        saveDownload(await response.text(), 'easyproxy-' + (previous ? 'precedente-' : 'backup-') + new Date().toISOString().slice(0,10) + '.json');
+    } catch (error) { toast(error.message, 'error'); }
+}
+function warpStatusLabel(status) {
+    return {Connected: 'Tunnel verificato', Disconnected: 'Tunnel non confermato', Disabled: 'Disattivato'}[status] || 'Da verificare';
+}
+let diagnosticReport = null;
+async function runDiagnostics() {
+    const button = document.getElementById('diagnostics-run');
+    const output = document.getElementById('diagnostics-results');
+    button.disabled = true;
+    button.textContent = 'Controllo in corso…';
+    output.textContent = 'Verifica del server e di WARP…';
+    diagnosticReport = null;
+    document.getElementById('diagnostics-download').disabled = true;
+    try {
+        const response = await fetch(adminUrl('/api/admin/diagnostics'), {
+            method: 'POST', signal: AbortSignal.timeout(22000)
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Controllo non completato.');
+        diagnosticReport = data;
+        output.replaceChildren();
+        for (const check of data.checks) {
+            const row = document.createElement('div');
+            row.className = 'diagnostic-row';
+            const title = document.createElement('strong');
+            title.textContent = ({ok: '✓ ', error: '⚠ ', info: 'ℹ '}[check.status] || '') + check.label;
+            const message = document.createElement('p');
+            message.textContent = check.message;
+            row.append(title, message);
+            output.append(row);
+        }
+        const stamp = document.createElement('p');
+        stamp.className = 'help-text';
+        stamp.textContent = 'Controllo del ' + new Date(data.checked_at).toLocaleString('it-IT') + '. ' + data.scope;
+        output.append(stamp);
+        document.getElementById('diagnostics-download').disabled = false;
+    } catch (error) {
+        output.textContent = error.name === 'TimeoutError' ? 'Tempo di attesa terminato. Riprova tra qualche secondo.' : error.message;
+    } finally {
+        button.disabled = false;
+        button.textContent = 'Controlla adesso';
+    }
+}
+function downloadDiagnostics() {
+    if (diagnosticReport) saveDownload(JSON.stringify(diagnosticReport, null, 2), 'easyproxy-diagnostica.json');
 }
 
 async function uploadConfig(event) {
     const file = event.target.files[0];
     if (!file) return;
+    if (file.size > 256 * 1024) { toast('Backup troppo grande: massimo 256 KB.', 'error'); event.target.value = ''; return; }
+    if (!confirm('Ripristinare questo backup? Le impostazioni attuali saranno sostituite e conservate come versione precedente.')) { event.target.value = ''; return; }
     const params = new URLSearchParams(window.location.search);
     const pw = params.get('api_password');
     const formData = new FormData();
     formData.append('config', file);
     try {
-        const resp = await fetch('/api/admin/config/upload' + (pw ? '?api_password=' + pw : ''), {
+        const resp = await fetch('/api/admin/config/upload' + (pw ? '?api_password=' + encodeURIComponent(pw) : ''), {
             method: 'POST', body: formData
         });
         if (resp.ok) {
-            toast('Config imported successfully — reloading...');
+            toast('Backup ripristinato — ricaricamento…');
             setTimeout(() => location.reload(), 800);
         } else {
             const err = await resp.text();
@@ -963,7 +1071,7 @@ async function toggleWarp() {
     const newVal = !config.enable_warp;
     const params = new URLSearchParams(window.location.search);
     const pw = params.get('api_password');
-    const resp = await fetch('/api/admin/warp/toggle' + (pw ? '?api_password=' + pw : ''), {
+    const resp = await fetch('/api/admin/warp/toggle' + (pw ? '?api_password=' + encodeURIComponent(pw) : ''), {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({enable: newVal})
     });
@@ -982,7 +1090,7 @@ async function refreshWarpStatus() {
         config.warp_status = data.warp_status;
         config.warp_ip = data.warp_ip || '';
         const ws = document.getElementById('warp-status');
-        ws.textContent = 'Status: ' + (data.warp_status || 'Unknown');
+        ws.textContent = warpStatusLabel(data.warp_status);
         ws.className = 'status ' + (data.warp_status === 'Connected' ? 'connected' : 'disconnected');
         document.getElementById('warp-ip').textContent = data.warp_ip ? '(' + data.warp_ip + ')' : '';
     } catch(e) { console.warn('Failed to refresh WARP status', e); }
@@ -1059,7 +1167,7 @@ async function addExtractorProxy() {
     if (!name || !value) { toast('Select an extractor and enter a value', 'error'); return; }
     const params = new URLSearchParams(window.location.search);
     const pw = params.get('api_password');
-    const resp = await fetch('/api/admin/extractor/proxy' + (pw ? '?api_password=' + pw : ''), {
+    const resp = await fetch('/api/admin/extractor/proxy' + (pw ? '?api_password=' + encodeURIComponent(pw) : ''), {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({extractor: name, proxy: value, type: extractorProxyMode})
     });
@@ -1079,7 +1187,7 @@ async function updateExtractorProxy(name, value) {
     const type = isFile ? 'file' : 'proxy';
     const params = new URLSearchParams(window.location.search);
     const pw = params.get('api_password');
-    const resp = await fetch('/api/admin/extractor/proxy' + (pw ? '?api_password=' + pw : ''), {
+    const resp = await fetch('/api/admin/extractor/proxy' + (pw ? '?api_password=' + encodeURIComponent(pw) : ''), {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({extractor: name, proxy: value, type: type})
     });
@@ -1090,7 +1198,7 @@ async function updateExtractorProxy(name, value) {
 async function removeExtractorProxy(name) {
     const params = new URLSearchParams(window.location.search);
     const pw = params.get('api_password');
-    const resp = await fetch('/api/admin/extractor/proxy' + (pw ? '?api_password=' + pw : ''), {
+    const resp = await fetch('/api/admin/extractor/proxy' + (pw ? '?api_password=' + encodeURIComponent(pw) : ''), {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({extractor: name, proxy: ''})
     });
@@ -1252,7 +1360,7 @@ loadConfig();
 setInterval(async () => {
     const params = new URLSearchParams(window.location.search);
     const pw = params.get('api_password');
-    const url = '/api/admin/config' + (pw ? '?api_password=' + pw : '');
+    const url = '/api/admin/config' + (pw ? '?api_password=' + encodeURIComponent(pw) : '');
     try {
         const resp = await fetch(url);
         if (resp.ok) {

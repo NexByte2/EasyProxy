@@ -112,6 +112,41 @@ Only basic environment variables need to be set in your `.env` file or container
 | `PORT` | Server port | `7860` |
 | `API_PASSWORD` | Password to protect the proxy API and admin panel | `ep` |
 
+### Diagnostica e backup (personalizzazione)
+
+Nel pannello `/admin` sono disponibili:
+
+- **Controlla adesso**: verifica la risposta del server e, se WARP è abilitato,
+  riutilizza il controllo di processo, socket e tunnel. Il rapporto è in italiano,
+  non include IP, URL o errori grezzi, e si può scaricare. Il test non verifica i
+  singoli stream e non riavvia servizi. Una richiesta per volta, timeout totale
+  di 16 secondi e riutilizzo dei risultati per 15 secondi limitano il carico.
+- **Guida agli errori**: spiegazioni dei codici HTTP più comuni, separate dai
+  risultati effettivi del controllo.
+- **Scarica backup / Ripristina backup**: la configurazione viene validata prima
+  del ripristino (JSON, massimo 256 KB). Sono accettati i file di configurazione
+  con le chiavi note a questa versione, comprese le liste proxy precedenti.
+- **Scarica versione precedente**: ogni salvataggio che cambia la configurazione
+  conserva il file precedente in `config.json.previous`. I salvataggi usano un
+  file temporaneo e sostituzione atomica; un errore di scrittura non pubblica le
+  nuove impostazioni in memoria. È conservata una sola versione precedente.
+
+Scaricare una copia sul proprio dispositivo è necessario per conservarla anche
+se il disco del servizio viene eliminato o ricreato. Questi backup possono
+contenere credenziali proxy e licenza WARP; non includono variabili d'ambiente
+(es. `API_PASSWORD`), `warp.conf` o registrazioni. Nessuna API IA, nuova dipendenza
+o servizio a pagamento è richiesto.
+
+Le API usano lo stesso controllo di accesso del pannello amministrativo:
+`POST /api/admin/diagnostics` e
+`GET /api/admin/config/download?previous=1`.
+
+Test offline, dopo l'installazione delle dipendenze del progetto:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
 ### 🛡️ Cloudflare WARP Integration
 The Docker image includes a pinned WARP registration script and `wireproxy`, providing a
 userspace WireGuard SOCKS5 relay. The generated profile is saved in `/data/warp.conf`

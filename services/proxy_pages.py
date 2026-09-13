@@ -36,7 +36,10 @@ _PROXY_ENV_KEYS = (
     "NO_PROXY", "no_proxy",
 )
 
-class HLSProxyPagesMixin:
+from services.admin_diagnostics import AdminDiagnosticsMixin
+
+
+class HLSProxyPagesMixin(AdminDiagnosticsMixin):
 
     async def handle_playlist_request(self, request):
         """Gestisce le richieste per il playlist builder"""
@@ -1334,13 +1337,17 @@ class HLSProxyPagesMixin:
     async def handle_admin_api_download(self, request):
         if not check_password(request):
             return web.Response(status=401, text="Unauthorized")
-        data = config_store.get_all()
+        try:
+            data = config_store.get_previous() if request.query.get("previous") == "1" else config_store.get_all()
+        except FileNotFoundError:
+            return web.json_response({"error": "Nessuna configurazione precedente disponibile. Verrà creata alla prossima modifica."}, status=404)
         json_str = json.dumps(data, indent=2)
         return web.Response(
             body=json_str,
             content_type="application/json",
             headers={
-                "Content-Disposition": 'attachment; filename="easyproxy_config.json"'
+                "Content-Disposition": 'attachment; filename="easyproxy_config.json"',
+                "Cache-Control": "no-store"
             }
         )
 
@@ -1352,20 +1359,22 @@ class HLSProxyPagesMixin:
             field = await reader.next()
             if not field or field.name != "config":
                 return web.Response(status=400, text="Missing 'config' file field")
-            raw = await field.read()
-            data = json.loads(raw)
-            if not isinstance(data, dict):
-                return web.Response(status=400, text="Config must be a JSON object")
+            raw = bytearray()
+            while chunk := await field.read_chunk():
+                raw.extend(chunk)
+                if len(raw) > 256 * 1024:
+                    return web.Response(status=413, text="Backup troppo grande: massimo 256 KB.")
+            data = config_store.validate_import(json.loads(raw))
             config_store.replace_all(data)
             reload_config()
             clear_proxy_affinity()
             self._invalidate_extractors()
             return web.json_response({"status": "ok", "message": "Config imported successfully"})
-        except json.JSONDecodeError:
-            return web.Response(status=400, text="Invalid JSON file")
+        except (ValueError, UnicodeError) as exc:
+            return web.Response(status=400, text="Backup non valido. " + (str(exc) if not isinstance(exc, (json.JSONDecodeError, UnicodeError)) else "Controlla il formato JSON."))
         except Exception as e:
             logger.error(f"Config upload failed: {e}")
-            return web.Response(status=500, text=f"Upload failed: {e}")
+            return web.Response(status=500, text="Ripristino non completato. Controlla lo spazio disponibile e i log del server.")
 
     async def handle_admin_api_speedtest(self, request):
         if not check_password(request):

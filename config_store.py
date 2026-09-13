@@ -2,6 +2,8 @@ import json
 import os
 import logging
 import threading
+import tempfile
+from copy import deepcopy
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +51,7 @@ DEFAULT_CONFIG = {
     "log_level": "WARNING",
 }
 
-_lock = threading.Lock()
+_lock = threading.RLock()
 _config_data = None
 
 
@@ -60,7 +62,7 @@ def _load():
         try:
             with open(_CONFIG_FILE, "r") as f:
                 data = json.load(f)
-            merged = dict(DEFAULT_CONFIG)
+            merged = deepcopy(DEFAULT_CONFIG)
             merged.update(data)
             # ponytail: merge default list keys to ensure mandatory exclusions are always present
             for list_key in ["warp_exclude_domains", "warp_off_extractors", "proxy_off_extractors"]:
@@ -75,68 +77,123 @@ def _load():
             return
         except Exception as e:
             logger.warning("Failed to load config.json: %s", e)
-    _config_data = dict(DEFAULT_CONFIG)
+    _config_data = deepcopy(DEFAULT_CONFIG)
     _save()
+
+
+def _atomic_write(path, payload):
+    os.makedirs(_CONFIG_DIR, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".config-", dir=_CONFIG_DIR)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def _save():
-    if _config_data is None:
+    if _config_data is not None:
+        _atomic_write(_CONFIG_FILE, json.dumps(_config_data, indent=2))
+
+
+def _commit(data):
+    """Persist before publishing in memory; keep the preceding complete config."""
+    global _config_data
+    payload = json.dumps(data, indent=2, allow_nan=False)
+    if data == _config_data:
         return
-    try:
-        os.makedirs(_CONFIG_DIR, exist_ok=True)
-        with open(_CONFIG_FILE, "w") as f:
-            json.dump(_config_data, f, indent=2)
-    except Exception as e:
-        logger.error("Failed to save config.json: %s", e)
+    if os.path.exists(_CONFIG_FILE):
+        with open(_CONFIG_FILE, encoding="utf-8") as stream:
+            previous = stream.read()
+        _atomic_write(_CONFIG_FILE + ".previous", previous)
+    _atomic_write(_CONFIG_FILE, payload)
+    _config_data = deepcopy(data)
 
 
 def get(key, default=None):
-    if _config_data is None:
-        _load()
     with _lock:
-        return _config_data.get(key, default)
-
-
-def set(key, value):
-    if _config_data is None:
-        _load()
-    with _lock:
-        _config_data[key] = value
-    _save()
+        if _config_data is None:
+            _load()
+        return deepcopy(_config_data.get(key, default))
 
 
 def get_all():
-    if _config_data is None:
-        _load()
     with _lock:
-        return dict(_config_data)
+        if _config_data is None:
+            _load()
+        return deepcopy(_config_data)
+
+
+def get_previous():
+    with _lock:
+        with open(_CONFIG_FILE + ".previous", encoding="utf-8") as stream:
+            return json.load(stream)
+
+
+def set(key, value):
+    update({key: value})
 
 
 def update(values: dict):
-    if _config_data is None:
-        _load()
     with _lock:
-        _config_data.update(values)
-    _save()
+        data = get_all()
+        data.update(deepcopy(values))
+        _commit(data)
 
 
 def replace_all(data: dict):
     """Replace entire config with new data (merged with defaults)."""
-    global _config_data
-    if _config_data is None:
-        _load()
-    merged = dict(DEFAULT_CONFIG)
-    merged.update(data)
     with _lock:
-        _config_data = merged
-    _save()
+        get_all()
+        merged = deepcopy(DEFAULT_CONFIG)
+        merged.update(deepcopy(data))
+        _commit(merged)
+
 
 def delete(key):
-    if _config_data is None:
-        _load()
     with _lock:
-        _config_data.pop(key, None)
-    _save()
+        data = get_all()
+        data.pop(key, None)
+        _commit(data)
+
+
+def validate_import(data):
+    """Reject malformed backups before touching live settings or their backup."""
+    if not isinstance(data, dict) or not data:
+        raise ValueError("Il backup deve essere un oggetto JSON non vuoto.")
+    if data.keys() - DEFAULT_CONFIG.keys():
+        raise ValueError("Il backup contiene impostazioni non riconosciute da questa versione.")
+    for key, value in data.items():
+        default = DEFAULT_CONFIG[key]
+        if key == "proxy_test_concurrency":
+            if value is not None and (type(value) is not int or value < 0):
+                raise ValueError("Concorrenza proxy non valida.")
+            continue
+        if type(value) is not type(default):
+            raise ValueError("Tipo di impostazione non valido: " + key)
+        if isinstance(default, list) and key != "transport_routes":
+            if any(not isinstance(item, str) for item in value):
+                raise ValueError("Elenco non valido: " + key)
+        if type(default) is int and (value < 0 or (key == "proxy_test_timeout" and value == 0)):
+            raise ValueError("Valore numerico non valido: " + key)
+    for route in data.get("transport_routes", []):
+        if (not isinstance(route, dict) or not isinstance(route.get("url"), str)
+                or not route["url"].strip()
+                or (route.get("proxy") is not None and not isinstance(route["proxy"], str))
+                or type(route.get("disable_ssl", False)) is not bool):
+            raise ValueError("Regola di instradamento non valida.")
+    for name, proxy in data.get("extractor_proxies", {}).items():
+        if not isinstance(name, str) or not (isinstance(proxy, str) or
+                (isinstance(proxy, list) and all(isinstance(item, str) for item in proxy)) or
+                (isinstance(proxy, dict) and isinstance(proxy.get("file"), str))):
+            raise ValueError("Configurazione proxy non valida.")
+    if "log_level" in data and data["log_level"] not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+        raise ValueError("Livello dei log non valido.")
+    return data
 
 
 _load()
