@@ -2,7 +2,11 @@ name: EasyProxy Tests
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - develop
+      - 'feature/**'
+      - 'fix/**'
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -11,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: easyproxy-tests-${{ github.ref }}
+  group: easyproxy-tests-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
