@@ -1,9 +1,10 @@
 """Runtime compatibility patch for the EasyProxy admin dashboard.
 
-The dual-WARP dashboard no longer renders the legacy #warp-status node, while
-older admin JavaScript still tries to update it. Safari then throws because
-getElementById('warp-status') returns null. Patch both status-update sites to
-be null-safe before the application serves the template.
+The dual-WARP dashboard replaces the legacy WARP heading at runtime. Older
+admin JavaScript still updates #warp-status and #warp-ip, so either lookup can
+return null after the heading has been replaced. Patch both config-load and
+status-refresh sites to be null-safe before the application serves the
+admin template.
 """
 from pathlib import Path
 
@@ -15,29 +16,47 @@ def _patch_admin_template() -> None:
     except OSError:
         return
 
-    old = """        const ws = document.getElementById('warp-status');
+    replacements = (
+        (
+            """        const ws = document.getElementById('warp-status');
         ws.textContent = warpStatusLabel(config.warp_status);
-        ws.className = 'status ' + (config.warp_status === 'Connected' ? 'connected' : 'disconnected');"""
-    new = """        const ws = document.getElementById('warp-status');
+        ws.className = 'status ' + (config.warp_status === 'Connected' ? 'connected' : 'disconnected');""",
+            """        const ws = document.getElementById('warp-status');
         if (ws) {
             ws.textContent = warpStatusLabel(config.warp_status);
             ws.className = 'status ' + (config.warp_status === 'Connected' ? 'connected' : 'disconnected');
-        }"""
-
-    old_refresh = """        const ws = document.getElementById('warp-status');
+        }""",
+        ),
+        (
+            """        const ws = document.getElementById('warp-status');
         ws.textContent = warpStatusLabel(data.warp_status);
-        ws.className = 'status ' + (data.warp_status === 'Connected' ? 'connected' : 'disconnected');"""
-    new_refresh = """        const ws = document.getElementById('warp-status');
+        ws.className = 'status ' + (data.warp_status === 'Connected' ? 'connected' : 'disconnected');""",
+            """        const ws = document.getElementById('warp-status');
         if (ws) {
             ws.textContent = warpStatusLabel(data.warp_status);
             ws.className = 'status ' + (data.warp_status === 'Connected' ? 'connected' : 'disconnected');
-        }"""
+        }""",
+        ),
+        (
+            """        document.getElementById('warp-ip').textContent = config.warp_ip ? '(' + config.warp_ip + ')' : '';""",
+            """        const warpIp = document.getElementById('warp-ip');
+        if (warpIp) warpIp.textContent = config.warp_ip ? '(' + config.warp_ip + ')' : '';""",
+        ),
+        (
+            """        document.getElementById('warp-ip').textContent = data.warp_ip ? '(' + data.warp_ip + ')' : '';""",
+            """        const warpIp = document.getElementById('warp-ip');
+        if (warpIp) warpIp.textContent = data.warp_ip ? '(' + data.warp_ip + ')' : '';""",
+        ),
+    )
 
-    patched = source.replace(old, new).replace(old_refresh, new_refresh)
+    patched = source
+    for old, new in replacements:
+        patched = patched.replace(old, new)
+
     if patched != source:
         try:
             path.write_text(patched, encoding="utf-8")
-            print("[AdminUI] WARP status DOM guards applied")
+            print("[AdminUI] WARP status/IP DOM guards applied")
         except OSError:
             pass
 
