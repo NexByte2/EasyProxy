@@ -7,6 +7,7 @@ from services.proxy_pages import HLSProxyPagesMixin
 from services.proxy_streaming import HLSProxyStreamingMixin
 from services.proxy_dual import HLSProxyDualMixin
 
+
 class HLSProxy(
     HLSProxyDualMixin,
     HLSProxyCoreMixin,
@@ -71,6 +72,35 @@ class HLSProxy(
         self._warp_ip = ""
         self._warp_status_checked_at = 0.0
         self._warp_status_reason = ""
+
+    async def handle_admin(self, request):
+        """Serve the admin page and keep legacy WARP JS compatible with Dual-WARP UI.
+
+        The Dual-WARP panel replaces the old single-WARP IP element, while the
+        upstream admin template still tries to write to #warp-ip. On Safari this
+        raises a TypeError and aborts the rest of loadConfig(). Patch the served
+        HTML defensively so missing legacy elements never break the panel.
+        """
+        response = await HLSProxyPagesMixin.handle_admin(self, request)
+        if response.status != 200 or not getattr(response, "text", None):
+            return response
+
+        html = response.text
+        html = html.replace(
+            "document.getElementById('warp-ip').textContent = config.warp_ip ? '(' + config.warp_ip + ')' : '';",
+            "const warpIpEl = document.getElementById('warp-ip'); if (warpIpEl) warpIpEl.textContent = config.warp_ip ? '(' + config.warp_ip + ')' : '';",
+        )
+        html = html.replace(
+            "document.getElementById('warp-ip').textContent = data.warp_ip ? '(' + data.warp_ip + ')' : '';",
+            "const warpIpEl = document.getElementById('warp-ip'); if (warpIpEl) warpIpEl.textContent = data.warp_ip ? '(' + data.warp_ip + ')' : '';",
+        )
+        # Keep authenticated refreshes working when the panel URL carries api_password.
+        html = html.replace(
+            "const r = await fetch('/api/admin/config');",
+            "const r = await fetch(adminUrl('/api/admin/config'));",
+        )
+        response.text = html
+        return response
 
 
 __all__ = ["HLSProxy"]
