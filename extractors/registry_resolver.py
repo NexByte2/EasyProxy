@@ -323,7 +323,7 @@ async def resolve_extractor(self, url: str, request_headers: dict, host: str = N
                         request_headers, proxies=proxy_list
                     )
                 return self.extractors[key]
-            elif host in {"cinejoy", "cinejoy.to"}:
+            elif host == "cinejoy" or host.startswith("cinejoy."):
                 key = _cache_key("cinejoy", bypass_warp)
                 if CinejoyExtractor is None:
                     raise RuntimeError("CinejoyExtractor module not available")
@@ -790,9 +790,9 @@ async def resolve_extractor(self, url: str, request_headers: dict, host: str = N
                     request_headers, proxies=proxy_list
                 )
             return self.extractors[key]
-        elif re.search(r"(?:www\.)?cinejoy\.to/", url, re.IGNORECASE):
+        elif re.search(r"(?:www\.)?cinejoy\.[a-z]{2,}/", url, re.IGNORECASE):
             key = _cache_key("cinejoy", bypass_warp)
-            proxy = get_proxy_for_url("cinejoy.to", bypass_warp=bypass_warp)
+            proxy = get_proxy_for_url(url, bypass_warp=bypass_warp)
             proxy_list = _build_proxy_list(proxy, "cinejoy")
             if CinejoyExtractor is None:
                 raise RuntimeError("CinejoyExtractor module not available")

@@ -116,7 +116,7 @@ class HLSProxyStreamingMixin:
                 # ✅ CORREZIONE: Se base_url è un URL completo (es. generato dal converter), usalo direttamente.
                 if any(
                     ext in base_url
-                    for ext in [".mp4", ".m4s", ".ts", ".m4i", ".m4a", ".m4v"]
+                    for ext in [".mp4", ".m4s", ".ts", ".m4i", ".m4a", ".m4v", ".dash"]
                 ):
                     segment_url = base_url
                 else:
@@ -387,7 +387,7 @@ class HLSProxyStreamingMixin:
             # Content-Length would make Safari wait for bytes that no longer
             # exist and repeatedly seek backwards.
             segment_ext = os.path.splitext(segment_name.split("?", 1)[0].lower())[1]
-            if segment_ext in {".ts", ".m4s", ".mp4", ".m4a", ".m4v", ".m4i", ".aac"}:
+            if segment_ext in {".ts", ".m4s", ".mp4", ".m4a", ".m4v", ".m4i", ".aac", ".dash"}:
                 headers["Accept-Encoding"] = "identity"
 
             if is_special_cdn:
@@ -475,7 +475,7 @@ class HLSProxyStreamingMixin:
                 # being able to demux it. Keep attachment semantics for legacy TS.
                 segment_path = segment_name.split("?", 1)[0].lower()
                 segment_ext = os.path.splitext(segment_path)[1]
-                is_fmp4 = segment_ext in {".m4s", ".mp4", ".m4a", ".m4v", ".m4i"}
+                is_fmp4 = segment_ext in {".m4s", ".mp4", ".m4a", ".m4v", ".m4i", ".dash"}
                 requested_media_type = request.query.get("media_type", "").lower()
                 set_response_header(
                     response_headers,
