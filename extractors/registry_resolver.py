@@ -362,12 +362,13 @@ async def resolve_extractor(self, url: str, request_headers: dict, host: str = N
 
         # 2. Auto-detection basata sull'URL
         parsed_url = urllib.parse.urlparse(url)
-        if (
-            parsed_url.hostname in {"altadefinizionestreaming.tv", "www.altadefinizionestreaming.tv"}
-            and (
-                parsed_url.path.startswith("/api/player-sources/")
-                or re.fullmatch(r"/film/.+-\d+/?", parsed_url.path)
-            )
+        ads_host = (parsed_url.hostname or "").lower()
+        ads_host_ok = bool(
+            ADS_HOST_PATTERN.fullmatch(ads_host)
+            or ads_host == ads_configured_host()
+        )
+        if parsed_url.path.startswith("/api/player-sources/") or (
+            ads_host_ok and re.fullmatch(r"/film/.+-\d+/?", parsed_url.path)
         ):
             key = _cache_key("ads", bypass_warp)
             if ADSExtractor is None:
