@@ -2,7 +2,7 @@ import json
 import logging
 import re
 import time
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlparse
 
 from extractors.base import BaseExtractor, ExtractorError
 
@@ -11,6 +11,8 @@ logger = logging.getLogger(__name__)
 ADS_CONFIG_URL = "https://raw.githubusercontent.com/realbestia1/domains/refs/heads/main/domains.json"
 ADS_COOKIE = "sid=518cf65bd4bfc95de0d6d58d186fa39e3417eadd34a4d514e7437fc21b85411e"
 ADS_HOST_PATTERN = re.compile(r"^(?:www\.)?altadefinizionestreaming\.[a-z]{2,}$")
+ADS_FILM_PATTERN = re.compile(r"/film/.+-(\d+)/?")
+ADS_SERIES_PATTERN = re.compile(r"/serie-tv/(?:.+-)?(\d+)(?:/(\d+)/(\d+))?/?")
 _ADS_CONFIG_TTL = 60
 _ads_cookie = ""
 _ads_origin = ""
@@ -69,6 +71,7 @@ class ADSExtractor(BaseExtractor):
         if parsed.scheme not in {"http", "https"}:
             raise ExtractorError("ADS: invalid URL")
 
+        request_query = {key: value for key, value in parse_qsl(parsed.query)} if parsed.query else {}
         remote_cookie, remote_origin = await self._remote_config()
         configured_host = urlparse(remote_origin).hostname or ""
         if not ADS_HOST_PATTERN.fullmatch(host) and host != configured_host:
@@ -80,10 +83,24 @@ class ADSExtractor(BaseExtractor):
             if parsed.query:
                 sources_url += f"?{parsed.query}"
         else:
-            film_match = re.fullmatch(r"/film/.+-(\d+)/?", parsed.path)
-            if not film_match:
+            film_match = ADS_FILM_PATTERN.fullmatch(parsed.path)
+            series_match = ADS_SERIES_PATTERN.fullmatch(parsed.path)
+            if film_match:
+                sources_url = f"{origin}/api/player-sources/movie/{film_match.group(1)}"
+            elif series_match:
+                season = (
+                    series_match.group(2)
+                    or str(kwargs.get("season") or request_query.get("season") or "1")
+                )
+                episode = (
+                    series_match.group(3)
+                    or str(kwargs.get("episode") or request_query.get("episode") or "1")
+                )
+                sources_url = (
+                    f"{origin}/api/player-sources/tv/{series_match.group(1)}/{season}/{episode}"
+                )
+            else:
                 raise ExtractorError("ADS: unsupported direct URL")
-            sources_url = f"{origin}/api/player-sources/movie/{film_match.group(1)}"
 
         cookie = self._cookie_from_kwargs(kwargs) or remote_cookie
         if not cookie:

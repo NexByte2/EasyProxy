@@ -367,9 +367,11 @@ async def resolve_extractor(self, url: str, request_headers: dict, host: str = N
             ADS_HOST_PATTERN.fullmatch(ads_host)
             or ads_host == ads_configured_host()
         )
-        if parsed_url.path.startswith("/api/player-sources/") or (
-            ads_host_ok and re.fullmatch(r"/film/.+-\d+/?", parsed_url.path)
-        ):
+        ads_path_ok = bool(
+            ADS_FILM_PATTERN.fullmatch(parsed_url.path)
+            or ADS_SERIES_PATTERN.fullmatch(parsed_url.path)
+        )
+        if parsed_url.path.startswith("/api/player-sources/") or (ads_host_ok and ads_path_ok):
             key = _cache_key("ads", bypass_warp)
             if ADSExtractor is None:
                 raise RuntimeError("ADSExtractor module not available")

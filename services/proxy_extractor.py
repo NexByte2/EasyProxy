@@ -16,7 +16,6 @@ from services.proxy_shared import (
 )
 import config_store
 import asyncio
-import secrets
 import base64
 import gzip
 import re
@@ -234,7 +233,9 @@ class HLSProxyExtractorHandlerMixin:
                 source_key = self._stream_key_for_url(
                     request.query.get("orig_url") or url
                 ) or "stream"
-                stream_key = f"{source_key}-{secrets.token_hex(6)}"
+                stream_key = self._reuse_stream_key(
+                    source_key, _config.get_client_ip(request)
+                )
 
             stream_url = result["destination_url"]
             stream_headers = result.get("request_headers", {})
