@@ -666,8 +666,8 @@ class HLSProxyStreamingMixin:
 
             # ponytail: strip Accept-Language for lulustream source to prevent 403 Forbidden
             orig_url = request.query.get("orig_url", "")
-            extractor_key = request.query.get("extractor_key", "")
-            if "lulustream" in orig_url or "luluvdo" in orig_url or extractor_key == "lulustream":
+            query_extractor_key = request.query.get("extractor_key", "")
+            if "lulustream" in orig_url or "luluvdo" in orig_url or query_extractor_key == "lulustream":
                 headers.pop("accept-language", None)
                 headers.pop("Accept-Language", None)
 
@@ -1207,6 +1207,7 @@ class HLSProxyStreamingMixin:
                         force_direct=force_direct,
                         extractor_key=extractor_key or request.query.get("extractor_key"),
                         stream_key=stream_key or request.query.get("stream_key"),
+                        max_res=self._request_forces_max_res(request, extractor_key, "hls"),
                     )
                     return web.Response(text=rewritten, headers={
                         "Content-Type": "application/vnd.apple.mpegurl",
@@ -1256,6 +1257,10 @@ class HLSProxyStreamingMixin:
                                 mpd_params = f"{mpd_params}&extractor_key={urllib.parse.quote(extractor_key, safe='')}" if mpd_params else f"extractor_key={urllib.parse.quote(extractor_key, safe='')}"
                             if stream_key and "stream_key=" not in mpd_params:
                                 mpd_params = f"{mpd_params}&stream_key={urllib.parse.quote(stream_key, safe='')}" if mpd_params else f"stream_key={urllib.parse.quote(stream_key, safe='')}"
+                            if "max_res=" not in mpd_params and self._request_forces_max_res(
+                                request, extractor_key, "mpd"
+                            ):
+                                mpd_params = f"{mpd_params}&max_res=true" if mpd_params else "max_res=true"
 
                             if rep_id:
                                 # Generate Media Playlist (Segments)
@@ -1322,6 +1327,7 @@ class HLSProxyStreamingMixin:
                         drm_token=drm_token,
                         extractor_key=extractor_key or request.query.get("extractor_key"),
                         stream_key=stream_key or request.query.get("stream_key"),
+                        max_res=self._request_forces_max_res(request, extractor_key, "mpd"),
                     )
 
                     return web.Response(

@@ -1113,6 +1113,24 @@ class HLSProxyCoreMixin:
             return None
         return hashlib.md5(url.encode()).hexdigest()[:12]
 
+    def _request_forces_max_res(self, request, extractor_key: str | None, source: str) -> bool:
+        """Apply the max-res policy for this request.
+
+        Direct /proxy/mpd and /proxy/hls calls honour the admin MPD/HLS
+        switches; requests that belong to an extractor (query namespace or the
+        extractor endpoint itself) honour only the per-extractor list.
+        """
+        query_key = request.query.get("extractor_key", "")
+        proxy_endpoint = request.path.startswith("/proxy/")
+        key = query_key or ("" if proxy_endpoint else (extractor_key or ""))
+        requested = request.query.get("max_res", "").lower() in {"1", "true", "yes", "on"}
+        return _config.should_force_max_res(
+            key,
+            requested,
+            source,
+            proxy_endpoint=proxy_endpoint,
+        )
+
     def _reuse_stream_key(self, source_key: str, client_id: str = "") -> str:
         """Keep one playback namespace while the player polls the extractor.
 
